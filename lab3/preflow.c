@@ -8,8 +8,9 @@
 #include <limits.h>
 #include <unistd.h>
 #include <stdbool.h>
+// #include <math.h>
 
-#define PRINT 1   /* enable/disable prints. */
+#define PRINT 0   /* enable/disable prints. */
 #define TIME 0    /* for timing on power.	*/
 #define FORSETE 0 /* enable/disable forsete. */
 
@@ -18,9 +19,10 @@
 #endif
 
 #if PRINT
-#define pr(...)                                                                \
-    do {                                                                       \
-        fprintf(stderr, __VA_ARGS__);                                          \
+#define pr(...)                       \
+    do                                \
+    {                                 \
+        fprintf(stderr, __VA_ARGS__); \
     } while (0)
 #else
 #define pr(...) /* no effect at all */
@@ -36,58 +38,86 @@ typedef struct list_t list_t;
 
 typedef struct xedge_t xedge_t;
 
-struct xedge_t {
+struct xedge_t
+{
     int u;
     int v;
     int c;
 };
 
-struct list_t {
+struct list_t
+{
     edge_t *edge;
     list_t *next;
 };
 
-struct node_t {
-    int h;                 /* height.			*/
-    int e;                 /* excess flow.			*/
-    list_t *edge;          /* adjacency list.		*/
-    node_t *next;          /* with excess preflow.		*/
-    pthread_mutex_t mutex; /* node lock. */
+struct node_t
+{
+    int h;        /* height.			*/
+    int e;        /* excess flow.			*/
+    list_t *edge; /* adjacency list.		*/
+    node_t *next; /* with excess preflow.		*/
+    // pthread_mutex_t mutex; /* node lock. */
 };
 
-struct edge_t {
+struct edge_t
+{
     node_t *u; /* one of the two nodes.	*/
     node_t *v; /* the other. 			*/
     int f;     /* flow > 0 if from u to v.	*/
     int c;     /* capacity.			*/
 };
 
-struct graph_t {
-    int n;          /* nodes.			*/
-    int m;          /* edges.			*/
-    node_t *v;      /* array of n nodes.		*/
-    edge_t *e;      /* array of m edges.		*/
-    node_t *s;      /* source.			*/
-    node_t *t;      /* sink.			*/
-    node_t *excess; /* nodes with e > 0 except s,t.	*/
+struct graph_t
+{
+    int n;     /* nodes.			*/
+    int m;     /* edges.			*/
+    node_t *v; /* array of n nodes.		*/
+    edge_t *e; /* array of m edges.		*/
+    node_t *s; /* source.			*/
+    node_t *t; /* sink.			*/
+    // node_t *excess; /* nodes with e > 0 except s,t.	*/
     pthread_mutex_t mutex;
     pthread_barrier_t barrier;
     bool shutdown;
-    int nrExcess;
     int nrThreads;
 };
 
+typedef struct command_t command_t;
+struct command_t
+{
+    node_t *u;
+    node_t *v;
+    edge_t *e;
+};
+
+typedef struct command_queue_t command_queue_t;
+struct command_queue_t
+{
+    command_t *commands;
+    int size;
+    int capacity;
+};
+
 typedef struct thread_local_data_t thread_local_data_t;
-struct thread_local_data_t {
-    int id;
+struct thread_local_data_t
+{
     graph_t *graph;
+    command_queue_t *commandQueue;
+    int id;
+    int start;
+    int stop;
+
+    thread_local_data_t *head;
+    int nrThreads;
 };
 
 static char *progname;
 
 static int id(graph_t *g, node_t *v) { return v - g->v; }
 
-void error(const char *fmt, ...) {
+void error(const char *fmt, ...)
+{
     va_list ap;
     char buf[BUFSIZ];
 
@@ -101,7 +131,8 @@ void error(const char *fmt, ...) {
     exit(1);
 }
 
-static int next_int() {
+static int next_int()
+{
     int x;
     int c;
 
@@ -112,7 +143,8 @@ static int next_int() {
     return x;
 }
 
-static void *xmalloc(size_t s) {
+static void *xmalloc(size_t s)
+{
     void *p;
 
     p = malloc(s);
@@ -123,14 +155,16 @@ static void *xmalloc(size_t s) {
     return p;
 }
 
-static void *xcalloc(size_t n, size_t s) {
+static void *xcalloc(size_t n, size_t s)
+{
     void *p;
     p = xmalloc(n * s);
     memset(p, 0, n * s);
     return p;
 }
 
-static void add_edge(node_t *u, edge_t *e) {
+static void add_edge(node_t *u, edge_t *e)
+{
     list_t *p;
     p = xmalloc(sizeof(list_t));
     p->edge = e;
@@ -138,7 +172,8 @@ static void add_edge(node_t *u, edge_t *e) {
     u->edge = p;
 }
 
-static void connect(node_t *u, node_t *v, int c, edge_t *e) {
+static void connect(node_t *u, node_t *v, int c, edge_t *e)
+{
     e->u = u;
     e->v = v;
     e->c = c;
@@ -149,7 +184,8 @@ static void connect(node_t *u, node_t *v, int c, edge_t *e) {
 
 #if FORSETE
 
-static graph_t *new_graph(int n, int m, int s, int t, xedge_t *e) {
+static graph_t *new_graph(int n, int m, int s, int t, xedge_t *e)
+{
     graph_t *g;
     node_t *u;
     node_t *v;
@@ -164,7 +200,8 @@ static graph_t *new_graph(int n, int m, int s, int t, xedge_t *e) {
     g->m = m;
 
     g->v = xcalloc(n, sizeof(node_t));
-    for (i = 0; i < n; ++i) {
+    for (i = 0; i < n; ++i)
+    {
         pthread_mutex_init(&g->v[i].mutex, NULL);
     }
     g->e = xcalloc(m, sizeof(edge_t));
@@ -173,7 +210,8 @@ static graph_t *new_graph(int n, int m, int s, int t, xedge_t *e) {
     g->t = &g->v[n - 1];
     g->excess = NULL;
 
-    for (i = 0; i < m; i += 1) {
+    for (i = 0; i < m; i += 1)
+    {
         a = e[i].u;
         b = e[i].v;
         c = e[i].c;
@@ -187,7 +225,8 @@ static graph_t *new_graph(int n, int m, int s, int t, xedge_t *e) {
 
 #else
 
-static graph_t *new_graph(FILE *in, int n, int m) {
+static graph_t *new_graph(FILE *in, int n, int m)
+{
     graph_t *g;
     node_t *u;
     node_t *v;
@@ -202,16 +241,17 @@ static graph_t *new_graph(FILE *in, int n, int m) {
     g->m = m;
 
     g->v = xcalloc(n, sizeof(node_t));
-    for (i = 0; i < n; ++i) {
-        pthread_mutex_init(&g->v[i].mutex, NULL);
-    }
+    // for (i = 0; i < n; ++i)
+    // {
+    //     pthread_mutex_init(&g->v[i].mutex, NULL);
+    // }
     g->e = xcalloc(m, sizeof(edge_t));
 
     g->s = &g->v[0];
     g->t = &g->v[n - 1];
-    g->excess = NULL;
 
-    for (i = 0; i < m; i += 1) {
+    for (i = 0; i < m; i += 1)
+    {
         a = next_int();
         b = next_int();
         c = next_int();
@@ -225,48 +265,59 @@ static graph_t *new_graph(FILE *in, int n, int m) {
 
 #endif
 
-static void relabel_thread(thread_local_data_t *thread_local, node_t *u) {
+static void relabel_thread(graph_t *g, node_t *u)
+{
     assert(u->e > 0);
     u->h += 1;
-    assert(u->h <= (2 * thread_local->graph->n) + 1);
+    assert(u->h <= (2 * g->n) + 1);
 
-    pr("relabel %d now h = %d\n", id(thread_local->graph, u), u->h);
+    pr("relabel %d now h = %d\n", id(g, u), u->h);
 }
 
-static int push(graph_t *g, node_t *u, edge_t *e) {
+static int push(graph_t *g, node_t *u, node_t *v, edge_t *e)
+{
     int d;
     // int d; /* remaining capacity of the edge. */
-    if (u == e->u) {
+    if (u == e->u)
+    {
         d = MIN(u->e, e->c - e->f);
         e->f += d;
-    } else {
+    }
+    else
+    {
         d = MIN(u->e, e->c + e->f);
         e->f -= d;
     }
 
     /* the following are always true. */
-
     assert(d >= 0);
     assert(abs(e->f) <= e->c);
+    // TODO(pf): Can we split this into separate threads dealing with this themselves ?
+    u->e -= d;
+    v->e += d;
     return d;
 }
 
-static node_t *other(node_t *u, edge_t *e) {
+static node_t *other(node_t *u, edge_t *e)
+{
     if (u == e->u)
         return e->v;
     else
         return e->u;
 }
 
-static void free_graph(graph_t *g) {
+static void free_graph(graph_t *g)
+{
     int i;
     list_t *p;
     list_t *q;
 
-    for (i = 0; i < g->n; i += 1) {
+    for (i = 0; i < g->n; i += 1)
+    {
         p = g->v[i].edge;
-        pthread_mutex_destroy(&g->v[i].mutex);
-        while (p != NULL) {
+        // pthread_mutex_destroy(&g->v[i].mutex);
+        while (p != NULL)
+        {
             q = p->next;
             free(p);
             p = q;
@@ -280,141 +331,141 @@ static void free_graph(graph_t *g) {
     free(g);
 }
 
-void *thread_work(void *arg) {
+void push_command(thread_local_data_t *args, node_t *u)
+{
+    node_t *v;
+    edge_t *e;
+    list_t *p;
+    int b;
+    graph_t *g = args->graph;
 
-    node_t *u; /* active node */
-    node_t *v; /* other node in edge */
-    edge_t *e; /* current edge */
-    list_t *p; /* adjecency list */
-    int b;     /* edge direction */
-    node_t *excess = NULL;
+    p = u->edge;
+    while (p != NULL)
+    {
+        e = p->edge;
+        p = p->next;
 
-    int processed_nodes = 0;
-    u = NULL;
-
-    thread_local_data_t *thread_local = arg;
-    graph_t *g = thread_local->graph;
-
-    while (true) {
-        if (excess == NULL) {
-            pthread_mutex_lock(&g->mutex);
-            if (g->excess != NULL) {
-                // for (int i = 0;
-                //      i <= MAX(2, (g->nrExcess / g->nrThreads)) && g->excess
-                //      != NULL; i++) {
-                excess = g->excess;
-                excess->next = NULL; 
-                // node_t *ne = g->excess;
-                g->excess = g->excess->next;
-                // ne->next = excess;
-                // excess = ne;
-                g->nrExcess--;
-            }
-            pthread_mutex_unlock(&g->mutex);
+        if (u == e->u)
+        {
+            v = e->v;
+            b = 1;
+        }
+        else
+        {
+            v = e->u;
+            b = -1;
         }
 
-        // PART 1: Pushing excess flow.
-        u = excess;
-        if (u != NULL) {
-            excess = NULL;
-            ++processed_nodes;
-#if PRINT
-            pthread_mutex_lock(&u->mutex);
-            pr("Thread %d selected u = %d with h = %d and e = %d.\n",
-               thread_local->id, id(g, u), u->h, u->e);
-            pthread_mutex_unlock(&u->mutex);
-#endif
-            p = u->edge;
-            while (p != NULL) {
-                e = p->edge;
-                p = p->next;
-
-                if (u == e->u) {
-                    v = e->v;
-                    b = 1;
-                } else {
-                    v = e->u;
-                    b = -1;
-                }
-
-                if (u->h > v->h && b * e->f < e->c) {
-                    pthread_mutex_lock(&u->mutex);
-                    int d = push(g, u, e);
-                    u->e -= d;
-                    int ue = u->e;
-                    assert(u->e >= 0);
-                    pthread_mutex_unlock(&u->mutex);
-                    pr("push from %d to %d: ue = %d, f = %d, c = %d, so "
-                       "pushing %d.\n",
-                       id(g, u), id(g, v), ue, e->f, e->c, d);
-                    int ve = 0;
-                    pthread_mutex_lock(&v->mutex);
-                    v->e += d;
-                    ve = v->e;
-                    pthread_mutex_unlock(&v->mutex);
-
-                    // NOTE(pf): Not source and sink AND didn't previously
-                    // have excess add to our excess list. We do not need to
-                    // lock the graph here either since only one of the
-                    // threads are working.
-                    if (v == g->s || v == g->t) {
-                        pthread_mutex_lock(&g->mutex);
-                        g->shutdown = abs(g->s->e) == g->t->e;
-                        if (g->shutdown) {
-                            pr("Initiate shutdown.\n");
-                        }
-                        pthread_mutex_unlock(&g->mutex);
-                    } else if (ve == d) {
-                        pthread_mutex_lock(&g->mutex);
-                        pr("Thread %d add node: %d to excess list.\n",
-                           thread_local->id, id(g, v));
-                        v->next = g->excess;
-                        g->excess = v;
-                        ++g->nrExcess;
-                        pthread_mutex_unlock(&g->mutex);
-                    }
-
-                    if (ue == 0) {
-                        u = NULL;
-                        pr("Thread %d exits loop.\n", thread_local->id);
-                        break;
-                    }
-                }
-            }
-        }
-
-        // PART 2: Synchronization and relabeling.
-        pr("Thread %d waiting at barrier 2.\n", thread_local->id);
-        pthread_barrier_wait(&g->barrier);
-        pr("Thread %d start from barrier 2.\n", thread_local->id);
-        // Check if we should relabel.
-        if (u != NULL && p == NULL) {
-            relabel_thread(thread_local, u);
-            u->next = excess;
-            excess = u;
-        }
-
-        pthread_mutex_lock(&g->mutex);
-        if (g->shutdown) {
-            pthread_mutex_unlock(&g->mutex);
-            pr("Thread %d shutdown.\n", thread_local->id);
+        if (u->h > v->h && b * e->f < e->c)
             break;
-        }
-        pthread_mutex_unlock(&g->mutex);
+        else
+            v = NULL;
     }
 
-    pr("?:D\n");
-    pthread_barrier_wait(&g->barrier);
+    if (args->commandQueue->size == args->commandQueue->capacity)
+    {
+        args->commandQueue->capacity *= 2;
+        args->commandQueue->commands = realloc(args->commandQueue->commands, sizeof(command_t) * args->commandQueue->capacity);
+
+        if (args->commandQueue->commands == NULL)
+        {
+            error("Failed to reallocate command queue.");
+        }
+    }
+
+    command_t *c = &args->commandQueue->commands[args->commandQueue->size++];
+    c->u = u;
+    c->e = e;
+    c->v = v;
+}
+
+/* THOUGHTS:
+ * Divide nodes based on cache block, i.e nodes[i % nrThreads].
+    * Potential opt.
+        * Each thread has a local excess list.
+        * If a thread pushes to a region of space where another thread owns,
+        then we have to push that to that threads excess list.
+ * Do a max of (nrThreads, nrExcess) threads.
+ * Command queue of actions to take on our nodes.
+ * Master thread who assigns to each other threads excess list from a global queue when the others pushes ?
+ * This would require the following phases:
+ * 1. Pick current excess and build command queue.
+ * Barrier.
+ * 2. Execute command queue / Assign to excess list.
+ * Barrier.
+ */
+
+void *thread_work(void *arg)
+{
+    node_t *u;        /* active node */
+    node_t *v;        /* other node in edge */
+    edge_t *e;        /* current edge */
+    list_t *p = NULL; /* adjecency list */
+    int b;            /* edge direction */
+    int i, j;         /* loop index */
+    int nrOfProcessedNodes = 0;
+    thread_local_data_t *thread_local = arg;
+    graph_t *g = thread_local->graph;
+    thread_local->commandQueue = malloc(sizeof(command_queue_t));
+    thread_local->commandQueue->capacity = 4;
+    thread_local->commandQueue->commands = malloc(sizeof(command_t) * thread_local->commandQueue->capacity);
+    thread_local->commandQueue->size = 0;
+
+    while (!g->shutdown)
+    {
+        // PART 1: Get command for each node.
+        for (i = thread_local->start; i <= thread_local->stop; ++i)
+        {
+            u = &g->v[i];
+            if (u->e == 0)
+            {
+                continue;
+            }
+            ++nrOfProcessedNodes;
+            push_command(thread_local, u);
+        }
+
+        // PART 2: Master thread performs push and relabel as needed.
+        int response = pthread_barrier_wait(&g->barrier);
+        if (response == 0)
+        {
+            for (i = 0; i < thread_local->nrThreads; ++i)
+            {
+                command_queue_t *currentQueue = thread_local->head[i].commandQueue;
+                for (int j = 0; j < currentQueue->size; ++j)
+                {
+                    command_t *c = &currentQueue->commands[j];
+                    if (c->v != NULL)
+                    {
+                        push(g, c->u, c->v, c->e);
+                        if (c->v == g->s || c->v == g->t)
+                        {
+                            g->shutdown = abs(g->s->e) == g->t->e;
+                        }
+                    }
+                    else
+                    {
+                        relabel_thread(g, c->u);
+                    }
+                }
+
+                currentQueue->size = 0;
+            }
+        }
+
+        pthread_barrier_wait(&g->barrier);
+    }
+
     // #if PRINT
-    pthread_mutex_lock(&g->mutex);
-    printf("Thread %d ends. Nodes processed %d.\n", thread_local->id,
-           processed_nodes);
-    pthread_mutex_unlock(&g->mutex);
+    printf("Thread %d processed %d nodes.\n", thread_local->id, nrOfProcessedNodes);
     // #endif
+    free(thread_local->commandQueue->commands);
+    free(thread_local->commandQueue);
     return NULL;
 }
 
-int xpreflow(graph_t *g) {
+int xpreflow(graph_t *g)
+{
     // used for initial pushes.
     node_t *s; /* source */
     node_t *u; /* current node */
@@ -435,50 +486,54 @@ int xpreflow(graph_t *g) {
     g->shutdown = false;
     // NOTE(pf): Start threads..
     int nrThreads = sysconf(_SC_THREAD_THREADS_MAX);
-    if (nrThreads == -1) {
+    if (nrThreads == -1)
+    {
         nrThreads = sysconf(_SC_NPROCESSORS_ONLN);
     }
+
+    // NOTE(pf): One thread is the main thread. -2 for source and sink.
+    nrThreads = MIN(g->n - 2, nrThreads - 1);
     g->nrThreads = nrThreads;
-    g->nrExcess = 0;
 
     pthread_mutex_init(&g->mutex, NULL);
-    pthread_barrier_init(&g->barrier, NULL, nrThreads);
-    // NOTE(pf): Force thread count for now.
-    // NOTE(pf): Continue from here, debug the code and hope for the best!
-    // nrThreads = 4;
-    // nrThreads = nrThreads * 2;
+    int response = pthread_barrier_init(&g->barrier, NULL, nrThreads);
 
     // NOTE(pf): This lock is to prevent helgrind from complaining.
     pthread_mutex_lock(&g->mutex);
-    while (p != NULL) {
+
+    while (p != NULL)
+    {
         e = p->edge;
         p = p->next;
         s->e -= e->c;
         v = other(s, e);
         v->e += e->c;
-        if (v != g->t) {
-            pr("Initial add node: %d to excess list.\n", id(g, v));
-            v->next = g->excess;
-            g->excess = v;
-            ++g->nrExcess;
-        }
     }
 
-    pr("THREADS INITIALIZED! %d\n", nrThreads);
+    // TODO(pf): Try this.
+    pr("THREADS INITIALIZED: %d .\n", nrThreads);
     pthread_t threads[nrThreads];
     thread_local_data_t thread_local[nrThreads];
-    for (i = 0; i < nrThreads; ++i) {
-        thread_local[i].id = i;
-        thread_local[i].graph = g;
-    }
     pthread_mutex_unlock(&g->mutex);
-    for (i = 0; i < nrThreads; ++i) {
+    int start = 1;
+    int stride = (g->n - 2) / nrThreads; // -2 for source and sink.
+    for (i = 0; i < nrThreads; ++i)
+    {
+        thread_local[i].graph = g;
+        thread_local[i].id = i;
+        thread_local[i].start = start;
+        thread_local[i].stop = start + stride - 1;
+        start += stride;
         // thread_work(&thread_local[i]);
-        if (pthread_create(&threads[i], NULL, thread_work, &thread_local[i])) {
+        if (pthread_create(&threads[i], NULL, thread_work, &thread_local[i]))
+        {
             printf("Failed to create a thread at %d.", i);
             break;
         }
     }
+
+    // TODO: Add main thread to work aswell.
+    // thread_work(&thread_local[0]);
 
     for (i = 0; i < nrThreads; ++i)
         pthread_join(threads[i], NULL);
@@ -487,7 +542,8 @@ int xpreflow(graph_t *g) {
 }
 
 #if FORSETE
-int preflow(int n, int m, int s, int t, xedge_t *e) {
+int preflow(int n, int m, int s, int t, xedge_t *e)
+{
 
     graph_t *g;
     int f;
@@ -508,13 +564,13 @@ int preflow(int n, int m, int s, int t, xedge_t *e) {
     return f;
 }
 #else
-int main(int argc, char *argv[]) {
+int main(int argc, char *argv[])
+{
     FILE *in;   /* input file set to stdin	*/
     graph_t *g; /* undirected graph. 		*/
     int f;      /* output from preflow.		*/
     int n;      /* number of nodes.		*/
     int m;      /* number of edges.		*/
-
 #if TIME
     init_timebase();
     double begin = timebase_sec();
