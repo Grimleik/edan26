@@ -12,7 +12,7 @@
 
 #define PRINT 0   /* enable/disable prints. */
 #define TIME 0    /* for timing on power.	*/
-#define FORSETE 0 /* enable/disable forsete. */
+#define FORSETE 1 /* enable/disable forsete. */
 
 #if TIME
 #include "timebase.h"
@@ -200,15 +200,15 @@ static graph_t *new_graph(int n, int m, int s, int t, xedge_t *e)
     g->m = m;
 
     g->v = xcalloc(n, sizeof(node_t));
-    for (i = 0; i < n; ++i)
-    {
-        pthread_mutex_init(&g->v[i].mutex, NULL);
-    }
+    // for (i = 0; i < n; ++i)
+    // {
+    //     pthread_mutex_init(&g->v[i].mutex, NULL);
+    // }
     g->e = xcalloc(m, sizeof(edge_t));
 
     g->s = &g->v[0];
     g->t = &g->v[n - 1];
-    g->excess = NULL;
+    // g->excess = NULL;
 
     for (i = 0; i < m; i += 1)
     {
@@ -410,6 +410,7 @@ void *thread_work(void *arg)
     thread_local->commandQueue->capacity = 4;
     thread_local->commandQueue->commands = malloc(sizeof(command_t) * thread_local->commandQueue->capacity);
     thread_local->commandQueue->size = 0;
+    pthread_barrier_wait(&g->barrier);
 
     while (!g->shutdown)
     {
@@ -427,20 +428,34 @@ void *thread_work(void *arg)
 
         // PART 2: Master thread performs push and relabel as needed.
         int response = pthread_barrier_wait(&g->barrier);
-        if (response == 0)
+        if (response == PTHREAD_BARRIER_SERIAL_THREAD)
         {
+            pr("Thread %d executing command queue.\n", thread_local->id);
+            bool exit = true;
             for (i = 0; i < thread_local->nrThreads; ++i)
             {
                 command_queue_t *currentQueue = thread_local->head[i].commandQueue;
                 for (int j = 0; j < currentQueue->size; ++j)
                 {
+                    exit = false;
                     command_t *c = &currentQueue->commands[j];
                     if (c->v != NULL)
                     {
-                        push(g, c->u, c->v, c->e);
+                        int d = push(g, c->u, c->v, c->e);
+
+                        pr("push from %d to %d: f = %d, c = %d, so pushing %d.\n",
+                           id(g, c->u), id(g, c->v), c->e->f, c->e->c, d);
                         if (c->v == g->s || c->v == g->t)
                         {
                             g->shutdown = abs(g->s->e) == g->t->e;
+#if PRINT
+                            if (g->shutdown)
+                            {
+                                pr("Shutdown initiated flow is equal. Flow is %d.\n", g->t->e);
+                                i = thread_local->nrThreads;
+                                break;
+                            }
+#endif
                         }
                     }
                     else
@@ -451,14 +466,23 @@ void *thread_work(void *arg)
 
                 currentQueue->size = 0;
             }
+
+            if (exit)
+            {
+                g->shutdown = true;
+                pr("Shutdown initiated, no more commands. Flow is %d.\n", g->t->e);
+            }
         }
 
         pthread_barrier_wait(&g->barrier);
     }
 
-    // #if PRINT
+#if PRINT
+    pthread_mutex_lock(&g->mutex);
     printf("Thread %d processed %d nodes.\n", thread_local->id, nrOfProcessedNodes);
-    // #endif
+    printf("Thread %d started from %d and processed to %d.\n", thread_local->id, thread_local->start, thread_local->stop);
+    pthread_mutex_unlock(&g->mutex);
+#endif
     free(thread_local->commandQueue->commands);
     free(thread_local->commandQueue);
     return NULL;
@@ -490,14 +514,14 @@ int xpreflow(graph_t *g)
     {
         nrThreads = sysconf(_SC_NPROCESSORS_ONLN);
     }
+    nrThreads = MIN(nrThreads, 6);
 
-    // NOTE(pf): One thread is the main thread. -2 for source and sink.
-    nrThreads = MIN(g->n - 2, nrThreads - 1);
+    // NOTE(pf): One thread is the main thread. -2 for source and sink, -1 for main thread.
+    nrThreads = MIN(g->n - 2, nrThreads);
     g->nrThreads = nrThreads;
 
     pthread_mutex_init(&g->mutex, NULL);
     int response = pthread_barrier_init(&g->barrier, NULL, nrThreads);
-
     // NOTE(pf): This lock is to prevent helgrind from complaining.
     pthread_mutex_lock(&g->mutex);
 
@@ -511,18 +535,20 @@ int xpreflow(graph_t *g)
     }
 
     // TODO(pf): Try this.
-    pr("THREADS INITIALIZED: %d .\n", nrThreads);
-    pthread_t threads[nrThreads];
-    thread_local_data_t thread_local[nrThreads];
+    pr("THREADS INITIALIZED: %d.\n", nrThreads);
+    pthread_t threads[nrThreads - 1]; // Don't need to start 'main'.
+    thread_local_data_t thread_local[nrThreads]; 
     pthread_mutex_unlock(&g->mutex);
     int start = 1;
     int stride = (g->n - 2) / nrThreads; // -2 for source and sink.
-    for (i = 0; i < nrThreads; ++i)
+    for (i = 0; i < nrThreads - 1; ++i)
     {
         thread_local[i].graph = g;
         thread_local[i].id = i;
         thread_local[i].start = start;
         thread_local[i].stop = start + stride - 1;
+        thread_local[i].head = thread_local;
+        thread_local[i].nrThreads = nrThreads;
         start += stride;
         // thread_work(&thread_local[i]);
         if (pthread_create(&threads[i], NULL, thread_work, &thread_local[i]))
@@ -532,10 +558,16 @@ int xpreflow(graph_t *g)
         }
     }
 
-    // TODO: Add main thread to work aswell.
-    // thread_work(&thread_local[0]);
+    // NOTE(pf): Explicit handling of end to ensure we capture all nodes, e.g uneven stride division.
+    thread_local[i].graph = g;
+    thread_local[i].id = i;
+    thread_local[i].start = start;
+    thread_local[i].stop = n - 2; // -1 to be in 0..n range and then an additional one to skip the sink.
+    thread_local[i].head = thread_local;
+    thread_local[i].nrThreads = nrThreads;
+    thread_work(&thread_local[i]);
 
-    for (i = 0; i < nrThreads; ++i)
+    for (i = 0; i < nrThreads - 1; ++i)
         pthread_join(threads[i], NULL);
 
     return g->t->e;
@@ -591,6 +623,7 @@ int main(int argc, char *argv[])
 
     f = xpreflow(g);
 
+    printf("total nodes %d\n", n);
     printf("f = %d\n", f);
     // printf("Sanity check\n");
 
